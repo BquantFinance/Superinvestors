@@ -379,14 +379,36 @@ if view_mode == "🌟 Universo de Carteras":
             )
         
         with col_select2:
-            max_stocks_per_investor = st.slider(
-                "📊 Máx. acciones por inversor",
-                min_value=5,
-                max_value=30,
-                value=15,
-                step=5,
-                help="Limita el número de acciones mostradas por cada inversor"
+            # NUEVO: Cambiar de número de acciones a filtro por relevancia
+            filter_method = st.radio(
+                "Método de filtrado:",
+                ["Por % Cartera", "Por % Acumulado", "Todas"],
+                index=1,
+                help="Elige cómo filtrar las posiciones mostradas"
             )
+            
+            if filter_method == "Por % Cartera":
+                min_position_pct = st.slider(
+                    "📊 Mostrar posiciones >",
+                    min_value=0.1,
+                    max_value=5.0,
+                    value=0.5,
+                    step=0.1,
+                    format="%.1f%%",
+                    help="Solo muestra posiciones mayores a este % de la cartera"
+                )
+            elif filter_method == "Por % Acumulado":
+                cumsum_threshold = st.slider(
+                    "📊 Mostrar top posiciones hasta",
+                    min_value=50,
+                    max_value=100,
+                    value=90,
+                    step=5,
+                    format="%d%%",
+                    help="Muestra las posiciones más grandes que sumen hasta este % de la cartera"
+                )
+            else:  # Todas
+                st.info("Mostrando todas las posiciones")
         
         # Check if we have data after filtering
         if filtered_df.empty:
@@ -412,12 +434,31 @@ if view_mode == "🌟 Universo de Carteras":
                     lambda x: '🟢 Comprando' if x in ['Compra', 'Añadir'] else '🔴 Vendiendo' if x == 'Reducir' else '⚪ Manteniendo'
                 )
                 
-                # Get top holdings per investor for clarity using the slider value
+                # NUEVO: Aplicar filtro por relevancia en lugar de número fijo
                 sunburst_filtered = []
                 for investor in selected_investors_sunburst:
-                    investor_data = sunburst_data[sunburst_data['Investor'] == investor].nlargest(max_stocks_per_investor, '% of Portfolio')
+                    investor_data = sunburst_data[sunburst_data['Investor'] == investor].copy()
+                    
                     if not investor_data.empty:
-                        sunburst_filtered.append(investor_data)
+                        # Ordenar por % de Portfolio descendente
+                        investor_data = investor_data.sort_values('% of Portfolio', ascending=False)
+                        
+                        if filter_method == "Por % Cartera":
+                            # Filtrar posiciones mayores al umbral
+                            investor_data = investor_data[investor_data['% of Portfolio'] >= min_position_pct]
+                        
+                        elif filter_method == "Por % Acumulado":
+                            # Calcular suma acumulada
+                            investor_data['cumsum_pct'] = investor_data['% of Portfolio'].cumsum()
+                            # Mantener posiciones hasta alcanzar el umbral
+                            investor_data = investor_data[investor_data['cumsum_pct'] <= cumsum_threshold + investor_data['% of Portfolio'].iloc[0]]
+                            # Limpiar columna temporal
+                            investor_data = investor_data.drop('cumsum_pct', axis=1)
+                        
+                        # Si es "Todas", no filtrar nada
+                        
+                        if not investor_data.empty:
+                            sunburst_filtered.append(investor_data)
                 
                 if len(sunburst_filtered) == 0:
                     st.warning("No hay datos disponibles para visualización con los filtros actuales.")
@@ -482,7 +523,16 @@ if view_mode == "🌟 Universo de Carteras":
                     # Show current visualization stats
                     num_investors_shown = sunburst_final['Investor'].nunique()
                     num_stocks_shown = sunburst_final['Stock'].nunique()
-                    st.caption(f"📊 Mostrando {num_investors_shown} inversores con {num_stocks_shown} acciones únicas • 🔍 Haz clic en cualquier segmento para hacer zoom")
+                    
+                    # NUEVO: Mostrar estadísticas más detalladas según el filtro
+                    if filter_method == "Por % Cartera":
+                        avg_positions = sunburst_final.groupby('Investor').size().mean()
+                        st.caption(f"📊 Mostrando {num_investors_shown} inversores | {num_stocks_shown} acciones únicas | Promedio {avg_positions:.0f} posiciones por inversor (>{min_position_pct}% de cartera)")
+                    elif filter_method == "Por % Acumulado":
+                        total_coverage = sunburst_final.groupby('Investor')['% of Portfolio'].sum().mean()
+                        st.caption(f"📊 Mostrando {num_investors_shown} inversores | {num_stocks_shown} acciones únicas | Cubriendo ~{total_coverage:.1f}% promedio de cada cartera")
+                    else:
+                        st.caption(f"📊 Mostrando {num_investors_shown} inversores con {num_stocks_shown} acciones únicas (TODAS las posiciones)")
                     
                     # Instructions
                     st.info("💡 **Características Interactivas:** Haz clic en cualquier segmento para acercar • Clic en el centro para alejar • Pasa el mouse para información detallada • Los colores representan concentración de cartera")
@@ -504,6 +554,11 @@ if view_mode == "🌟 Universo de Carteras":
                            - ⚪ **Manteniendo** = Sin cambios
                         3. **Anillo Exterior:** Las acciones individuales en cada cartera
                         
+                        **Métodos de Filtrado:**
+                        - **Por % Cartera:** Solo muestra posiciones mayores a X% (elimina ruido de posiciones pequeñas)
+                        - **Por % Acumulado:** Muestra las posiciones más grandes hasta sumar X% de la cartera
+                        - **Todas:** Muestra todas las posiciones sin filtrar
+                        
                         **¿Para qué sirve?**
                         - **Identificar patrones:** Ver rápidamente qué inversores están comprando vs vendiendo
                         - **Descubrir oportunidades:** Encontrar acciones que múltiples inversores están acumulando
@@ -516,10 +571,7 @@ if view_mode == "🌟 Universo de Carteras":
                         - **Pasa el mouse** sobre cualquier segmento para ver información detallada
                         - **Los colores** van de morado (baja concentración) a rojo (alta concentración)
                         
-                        **Ejemplo de uso:**
-                        Si ves que Warren Buffett tiene un segmento grande en verde (comprando) y al hacer clic ves que está comprando Apple con alta concentración (color rojo), esto podría ser una señal interesante para investigar más.
-                        
-                        **Tip profesional:** Busca patrones donde múltiples inversores legendarios están comprando la misma acción - esto aparecerá como múltiples segmentos verdes apuntando al mismo stock.
+                        **Tip profesional:** Usa "Por % Acumulado" al 90% para ver las posiciones que realmente importan sin ruido.
                         """)
     
     with col_side:
